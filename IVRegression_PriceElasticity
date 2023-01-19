@@ -1,0 +1,169 @@
+pacotes <- c("kableExtra","reshape2","tidyverse","ggsci","gridExtra","lubridate",
+             "data.table","estimater","modelsummary","broom","lmtest","OIdata","sandwich","doBy","openintro","ivpack","arm","stargazer","jtools","plm","car","caret","carData","dplyr","AER")
+
+## Install all the needed packages to deploy the model
+
+if(sum(as.numeric(!pacotes %in% installed.packages()))!= 0){
+  instalador <- pacotes[!pacotes %in% installed.packages()]
+  for (i in 1: length(instalador)) {
+    install.packages(instalador,dependencies = T)
+    break()}
+  sapply(pacotes, require, character = T)
+} else {
+  sapply(pacotes,require,character = T)
+}
+
+## Bringing the csv to R
+dados <- read.csv("C:\\Users\\thale\\Desktop\\20231101_Elasticity.csv",
+                                   sep = ";")
+str(dados) ## Verify the structure of the dataset
+View(head(dados)) ## Check dataset
+
+## Working on some cleaning 
+dados2 <- dados[,!names(dados) %in% c("X", "X.1")]
+dados2 <- dados2 %>%
+  mutate(SalesDate = as.Date(SalesDate, "%d/%m/%Y"))
+str(dados2)
+dim(dados2)
+
+
+## Remove NAS from the dataset
+dados2 <- dados2 %>% drop_na()
+df_log <- df_log %>% drop_na()
+
+
+## Create log data.frame
+df_log <- data.frame(Sales_date=dados2$SalesDate,
+                     Sku=dados2$Sku,
+                     Log_Revenue=log(dados2$Revenue),
+                     Log_TotalSold=log(dados2$TotalSold),
+                     Log_Avprice=log(dados2$AvPrice),
+                     Log_inflation=log(dados2$Inflation),
+                     Log_cost=log(dados2$Cost)
+                     )
+
+## Pricing variance
+pricevar <- ggplot(dados2,aes(x = SalesDate, y = AvPrice, group = Sku)) +
+            geom_line(aes(color = Sku)) +
+            theme_minimal() +
+            ylim(0,320) + 
+            scale_x_date(date_breaks = "2 months") +
+            labs(title = "Price Variance over time")
+pricevar
+
+## Price data exploration 2
+df_pricestr = dados2 %>%
+  group_by(Sku) %>%
+  summarise(min_price = min(AvPrice),
+            mean_price = mean(AvPrice),
+            max_price = max(AvPrice))
+df_pricestr_l = melt(df_pricestr, id = 'Sku')
+
+
+## Data visuals for min, max, av price.
+p_price_arch = ggplot(df_pricestr_l, aes(x = Sku, y = value, group = variable)) +
+  geom_point(aes(color = variable), size = 4, shape = 20) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(size = 10),
+        axis.text.y = element_text(size = 10),
+        legend.text = element_text(size = 10)) +
+  scale_color_npg(breaks=c("max_price","mean_price","min_price")) +
+  labs(title = 'Price Architecture',
+       x = "",
+       y = 'Price Structure') +
+  geom_text(aes(label=round(value, 2)),hjust=-0.3, vjust=-1)
+p_price_arch
+
+
+## Running IV try to resolve the issues for endogeinity
+## Principais razoes sao vies de variavel omitida e simultanedade 
+## Com endogeneidade no modelo os Betas acabam nao sendo bons estimadores
+## Simultaneidade ( y = a + b1 * x + uerro) - Y impacta X o que na verdade deveria ser o X e o termo de erro U impactando Y
+## vies variavel omitida ( y = a + b1 * x + u) - Termo de erro(variavel omitida no termo) impacta nosso X sendo assim no B1 nao estara capturando apenas o impacto de x em y e sim o valor do termo de erro tambem
+## Y = outcome variable  (log quantity)
+## X = Endogenous variable (Log price)
+## Z = Instruments (Inflation, Cost)
+## W = Any exogenous variables not including in the instrument
+
+## IV Equation
+## ivreg(Y ~ X + W | W + Z)
+## Weak Instrument Test F stats > 10 strong instrument reject null hypothesites that we have weak instruments
+## Wu-hausman Test check the consistency from OLS vs IV null hypothesis there is no endogenity in the OLS
+product_ids <- unique(df_log$Sku)
+product_ids
+
+# Loop through the list of product IDs
+
+for (i in 1:length(product_ids)) {
+  
+  # Subset the data for the current product ID
+  product_data <- df_log[df_log$Sku == product_ids[i], ]
+  
+  # Run the IV regression
+  iv_model <- ivreg(
+    Log_TotalSold ~ Log_Avprice | 
+    Log_cost, data = product_data)
+  
+  # Print the summary of the model for the current product ID
+  print(paste("Summary of IV regression for product",product_ids[i]))
+  print(summary(iv_model,vcov = sandwich, diagnostics = T))
+  
+  ## Check if the model was correctly run
+  if(is.null(iv_model$residuals)) {
+    print(paste("IV regression for product", product_ids[i], "failed to run correctly"))
+  } else {
+    print(paste("IV regression for product", product_ids[i], "was run correctly"))
+    }
+  }
+
+## Group data based on Sku and summarize information
+df2 <- df_log %>% group_by(Sku) %>% 
+  summarise(Log_TotalSold=sum(Log_TotalSold),
+            Log_Avprice= mean(Log_Avprice),
+            Log_cost=mean(Log_cost),
+            ) %>%
+  as.data.frame()
+
+## Add new column to this data.frame
+df2$Revenue <- with(df2, ifelse(df2$Log_TotalSold > 0,df2$Log_TotalSold*
+                                  df2$Log_Avprice,0)
+                    )
+## Add new column NA to this data.frame
+df2[ , 'Elasticity'] <- NA
+
+## Add new column NA to this data.frame
+df2[ , 'Status'] <- NA
+
+## Add new info to df2 dataframe
+df2$Status <- ifelse(df2$Elasticity > 0, 'Not Classified', ifelse(df2$Elasticity <=0& df2$Elasticity >=-1  
+                                                        , 'Not Elastic', 'Elastic'))
+
+
+# Replace Values Based on ID
+df2$Elasticity[df2$Sku == "SKU_A"] <- -0.7686
+df2$Elasticity[df2$Sku == "SKU_B"] <- -1.7497
+df2$Elasticity[df2$Sku == "SKU_C"] <- 1.11208
+df2$Elasticity[df2$Sku == "SKU_D"] <- 0.0853
+df2$Elasticity[df2$Sku == "SKU_E"] <-  -0.75280
+df2$Elasticity[df2$Sku == "SKU_F"] <- -1.1728
+
+
+# plot elasticiy
+p_ope = ggplot(df2, aes(x = reorder(Sku, -Elasticity), y = Elasticity, fill = Sku)) + 
+  ggplot2::geom_bar(stat = 'identity', width = 0.5) +
+  #scale_fill_manual(values=c('#C34A36', # very high
+                                      #"#FF8066", # high
+                                      #"#FFC75F", # middle
+                                      #"#9DD694")) +
+                                        theme_minimal() +
+  theme(axis.text.x = element_text(size = 12),
+        axis.text.y = element_text(size = 10),
+        legend.text = element_text(size = 10)) +
+  labs(title = 'Price Elasticity',
+       x = "",
+       y = 'Price Elasticity') +
+  scale_x_discrete(position = "top") +
+  scale_y_continuous(expand = c(0,0)) +
+  geom_text(aes(label=round(Elasticity,1)),position=position_stack(vjust=0.5), size = 5)
+p_ope 
+
