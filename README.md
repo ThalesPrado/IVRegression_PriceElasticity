@@ -1,6 +1,6 @@
 # Price_Elasticity_IVRegression
 
-# Repository created to perform price elasticity fo demand for a list of SKU using IV regression to possibily treat the endogenity
+# Repository created to perform price elasticity of demand for a list of SKU using IV regression to possibly treat the endogenity
 
 ***
 
